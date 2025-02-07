@@ -15,7 +15,12 @@ timeout = 100
 # Загружаем переменные из .env
 load_dotenv()
 
-def downloading_clickhouse(query_ch, database_ch):
+def load_sql_query(filepath):
+    """Читает SQL-запрос из файла"""
+    with open(filepath, "r", encoding="utf-8") as file:
+        return file.read()
+
+def downloading_clickhouse():
     client = Client(
         host=os.getenv('CLICKHOUSE_HOST'),
         port=os.getenv('CLICKHOUSE_PORT'),
@@ -25,16 +30,14 @@ def downloading_clickhouse(query_ch, database_ch):
         send_receive_timeout=int(os.getenv('CLICKHOUSE_TIMEOUT', '10'))
     )
     try:
-        result = client.query_dataframe(query_ch)
+        query = load_sql_query("sql/query.sql")
+        result = client.query_dataframe(query)
         return result
     finally:
-        if client:
-            client.disconnect()
-
+        client.disconnect()
 
 def process_data(df):
     df_initial = df.copy()
-
 
     summary_df = df.groupby(["car_sending_sla"]).agg({"number_of_items": "sum"}).reset_index()
     summary_df["routes"] = df.groupby("car_sending_sla")["route_id"].apply(
@@ -61,42 +64,13 @@ def compute_combinations(route_ids, zone_values):
     return pd.DataFrame(combinations_array, columns=["Routes", "Average Items per Zone", "Total Items", "Earliest SLA"])
 
 
-# ClickHouse запрос
 database_ch = 'wms'
-query_dwh_c = """
-WITH sku_item_table AS
-         (SELECT *
-          FROM silver.sku_item FINAL
-          WHERE status = 'RESERVED'),
-     cars AS
-         (SELECT route_id,
-                  min(formatDateTime(toDateTime(car_sending_sla), '%T')) AS car_sending_sla
-          FROM golden.dp_dict_extended_hist
-          WHERE DATE(dt) = DATE(today()) - INTERVAL '1 day' AND route_id != 0
-          GROUP BY 1)
-SELECT
-        z.id             zone_id,
-        cars.car_sending_sla as car_sending_sla,
-        a.route_id                                             route_id,
-        uniqExact(si.id) number_of_items
-FROM sku_item_table si 
-         JOIN dict.wms_assembly a ON si.assembly_id = a.id
-    AND a.assembly_type = 'ORDER'
-    AND a.wave_id IS NULL
-         JOIN dict.cell c ON si.place_id = c.cell_id
-         JOIN dict.zone z ON z.id = c.zone_id
-         JOIN dict.stock s ON z.stock_id = s.id AND s.title = 'Фулфилмент'
-         JOIN dict.wms_wms_order wo ON a.source_id = wo.wms_order_id
-         JOIN dict.wms_orders o ON toUInt32(o.id) = toUInt32(wo.order_id)
-         JOIN cars ON cars.route_id = a.route_id
-WHERE DATE(o.date_delivery) = '2025-02-09'
-GROUP BY 1, 2, 3;"""
 
 st.title("Waves 🌊🌊🌊 🏄")
 
 # Загружаем данные из ClickHouse при нажатии кнопки
 if st.button("Загрузить данные из БД"):
-    df = downloading_clickhouse(query_dwh_c, database_ch)
+    df = downloading_clickhouse()
     df_initial, pivot_df, summary_df = process_data(df)
 
     # Сохраняем данные в session_state
