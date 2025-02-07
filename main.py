@@ -35,6 +35,7 @@ def downloading_clickhouse(query_ch, database_ch):
 def process_data(df):
     df_initial = df.copy()
 
+
     summary_df = df.groupby(["car_sending_sla"]).agg({"number_of_items": "sum"}).reset_index()
     summary_df["routes"] = df.groupby("car_sending_sla")["route_id"].apply(
         lambda x: ", ".join(map(str, x.unique()))).values
