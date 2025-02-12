@@ -2,51 +2,57 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from itertools import combinations
-from clickhouse_driver import Client
+import psycopg
 import os
 from dotenv import load_dotenv
-from clickhouse_driver import Client
+from datetime import date
 
-timeout = 100
-
-
-
-
-# Загружаем переменные из .env
 load_dotenv()
 
-def load_sql_query(filepath):
-    """Читает SQL-запрос из файла"""
-    with open(filepath, "r", encoding="utf-8") as file:
-        return file.read()
+st.set_page_config(layout="wide")
 
-def downloading_clickhouse():
-    client = Client(
-        host=os.getenv('CLICKHOUSE_HOST'),
-        port=os.getenv('CLICKHOUSE_PORT'),
-        user=os.getenv('CLICKHOUSE_USER'),
-        password=os.getenv('CLICKHOUSE_PASSWORD'),
-        connect_timeout=int(os.getenv('CLICKHOUSE_TIMEOUT', '10')),
-        send_receive_timeout=int(os.getenv('CLICKHOUSE_TIMEOUT', '10'))
+
+def load_sql_query(filepath, placeholders=None):
+    with open(filepath, "r", encoding="utf-8") as file:
+        query = file.read()
+    if placeholders:
+        for key, value in placeholders.items():
+            query = query.replace(f"{{{key}}}", str(value))
+    return query
+
+
+def downloading_postgres(query):
+    connection = psycopg.connect(
+        host=os.getenv('POSTGRES_HOST'),
+        port=os.getenv('POSTGRES_PORT'),
+        user=os.getenv('POSTGRES_USER'),
+        password=os.getenv('POSTGRES_PASSWORD'),
+        dbname=os.getenv('POSTGRES_DB'),
+        connect_timeout=int(os.getenv('POSTGRES_TIMEOUT', '10'))
     )
     try:
-        query = load_sql_query("sql/query.sql")
-        result = client.query_dataframe(query)
-        return result
+        with connection.cursor() as cursor:
+            result = pd.read_sql(query, connection)
+            return result
     finally:
-        client.disconnect()
+        connection.close()
 
-def process_data(df):
+
+def process_data_wave_data(df):
     df_initial = df.copy()
-
     summary_df = df.groupby(["car_sending_sla"]).agg({"number_of_items": "sum"}).reset_index()
-    summary_df["routes"] = df.groupby("car_sending_sla")["route_id"].apply(
-        lambda x: ", ".join(map(str, x.unique()))).values
-    summary_df["zones"] = df.groupby("car_sending_sla").agg({"zone_id": "nunique"}).values
-    summary_df["items_to_zones"] = round(summary_df["number_of_items"] / summary_df["zones"], 2)
+
+    summary_df["routes"] = df.groupby("car_sending_sla")["route_id"] \
+        .apply(lambda x: ", ".join(map(str, x.unique()))) \
+        .reset_index(drop=True)
+
+    summary_df["zones"] = df.groupby("car_sending_sla")["zone_id"].nunique() \
+        .reset_index(drop=True)
+
 
     pivot_df = df.pivot_table(index=["route_id", "car_sending_sla"],
                               columns="zone_id", values="number_of_items", fill_value=0)
+
     return df_initial, pivot_df, summary_df
 
 
@@ -63,15 +69,15 @@ def compute_combinations(route_ids, zone_values):
             combinations_array.append((formatted_routes, avg_per_zone, total_items, earliest_sla))
     return pd.DataFrame(combinations_array, columns=["Routes", "Average Items per Zone", "Total Items", "Earliest SLA"])
 
-
-database_ch = 'wms'
-
 st.title("Waves 🌊🌊🌊 🏄")
+
+selected_date = st.date_input("Выберите дату доставки", date.today())
 
 # Загружаем данные из ClickHouse при нажатии кнопки
 if st.button("Загрузить данные из БД"):
-    df = downloading_clickhouse()
-    df_initial, pivot_df, summary_df = process_data(df)
+    wave_query = load_sql_query("sql/next_wave_query.sql", {"delivery_date": selected_date})
+    next_wave_df = downloading_postgres(wave_query)
+    df_initial, pivot_df, summary_df = process_data_wave_data(next_wave_df)
 
     # Сохраняем данные в session_state
     st.session_state["df_initial"] = df_initial
@@ -83,15 +89,27 @@ if "df_initial" in st.session_state:
     st.write("### Количество заказов по маршрутам")
     st.dataframe(st.session_state["summary_df"])
 
+    # unique_times = sorted(st.session_state["summary_df"]["car_sending_sla"].unique())
+    # selected_times = st.multiselect("Выберите времена отправки", unique_times, default=unique_times)
+    #
+    # # Фильтр по количеству товаров
+    # selected_items_range = st.slider("Выберите диапазон количества товаров", 1, 6000, (2000, 3000))
+
     unique_times = sorted(st.session_state["summary_df"]["car_sending_sla"].unique())
-    selected_times = st.multiselect("Выберите времена отправки", unique_times, default=unique_times)
+
+    # Две колонки
+    col1, col2 = st.columns(2)
+
+    with col1:
+        selected_times = st.multiselect("Выберите времена отправки", unique_times, default=unique_times)
+
+    with col2:
+        selected_items_range = st.slider("Выберите диапазон количества товаров", 1, 6000, (2000, 3000))
+
 
     # Фильтруем исходный DataFrame по выбранным временам
     filtered_df = st.session_state["df_initial"][
         st.session_state["df_initial"]["car_sending_sla"].isin(selected_times)]
-
-    # Фильтр по количеству товаров
-    selected_items_range = st.slider("Выберите диапазон количества товаров", 0, 20000, (0, 20000))
 
     # Проверяем, есть ли данные после фильтрации
     if filtered_df.empty:
@@ -122,4 +140,4 @@ if "df_initial" in st.session_state:
                                                           ascending=[True, False])
 
             st.write("### Оптимальные маршруты для запуска")
-            st.dataframe(combinations_df, use_container_width=True, height=600)
+            st.dataframe(combinations_df, use_container_width=True)
