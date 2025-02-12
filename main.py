@@ -6,7 +6,7 @@ import psycopg
 import os
 from dotenv import load_dotenv
 from datetime import date
-
+import matplotlib.pyplot as plt
 load_dotenv()
 
 st.set_page_config(layout="wide")
@@ -64,10 +64,13 @@ def compute_combinations(route_ids, zone_values):
             selected_routes = zone_values[selected_indices, :]
             avg_per_zone = round(np.mean(np.sum(selected_routes, axis=0)), 1)
             total_items = np.sum(selected_routes)
+            q25 = round(np.percentile(np.sum(selected_routes, axis=0), 25), 1)
             earliest_sla = min(combination, key=lambda x: x[1])[1]
             formatted_routes = ", ".join([str(r[0]) for r in combination])
-            combinations_array.append((formatted_routes, avg_per_zone, total_items, earliest_sla))
-    return pd.DataFrame(combinations_array, columns=["Routes", "Average Items per Zone", "Total Items", "Earliest SLA"])
+            combinations_array.append((formatted_routes, avg_per_zone, total_items, q25, earliest_sla))
+
+    return  pd.DataFrame(combinations_array, columns=["Routes", "Average Items per Zone", "Total Items", "Q25", "Earliest SLA"])
+
 
 st.title("Waves 🌊🌊🌊 🏄")
 
@@ -89,21 +92,31 @@ if st.button("Загрузить данные из БД"):
 
     st.session_state["active_workers_df"] = active_workers_df
 
+    wave_history = load_sql_query("sql/wave_history.sql")
+    wave_history_df = downloading_postgres(wave_history)
+
+    st.session_state["wave_history_df"] = wave_history_df
+
+
 # Проверяем, есть ли загруженные данные
 if "df_initial" in st.session_state:
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("### Количество заказов по маршрутам")
-        st.dataframe(st.session_state["summary_df"], use_container_width=True)
-    with col2:
-        st.write("### Число работников")
-        st.dataframe(st.session_state["active_workers_df"], use_container_width=True)
+
+    st.write("### Количество заказов по маршрутам")
+    st.dataframe(st.session_state["summary_df"], use_container_width=True)
+
+    with st.expander("Прошлые волны"):
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("### Прошлые волны")
+            st.dataframe(st.session_state["wave_history_df"], use_container_width=True)
+        with col2:
+            st.write("### Число работников")
+            st.dataframe(st.session_state["active_workers_df"], use_container_width=True)
 
     unique_times = sorted(st.session_state["summary_df"]["car_sending_sla"].unique())
 
     # Две колонки
     col3, col4 = st.columns(2)
-
     with col3:
         selected_times = st.multiselect("Выберите времена отправки", unique_times, default=unique_times)
     with col4:
@@ -134,13 +147,32 @@ if "df_initial" in st.session_state:
             combinations_df = compute_combinations(route_ids, zone_values)
 
             # Фильтрация по слайдеру количества товаров
-            combinations_df = combinations_df[
-                (combinations_df["Total Items"] >= selected_items_range[0]) &
-                (combinations_df["Total Items"] <= selected_items_range[1])
-                ]
+            # combinations_df = combinations_df[
+            #     (combinations_df["Total Items"] >= selected_items_range[0]) &
+            #     (combinations_df["Total Items"] <= selected_items_range[1])
+            #     ]
 
-            combinations_df = combinations_df.sort_values(by=["Earliest SLA", "Average Items per Zone"],
-                                                          ascending=[True, False])
+            combinations_df = combinations_df[combinations_df["Total Items"]<5000]
+
+            combinations_df = combinations_df.sort_values(by = "Average Items per Zone", ascending=False)
+
+            st.session_state["combinations_df"] = combinations_df
 
             st.write("### Оптимальные маршруты для запуска")
-            st.dataframe(combinations_df, use_container_width=True)
+            st.dataframe(st.session_state["combinations_df"], use_container_width = True)
+
+
+            top_routes_str = st.session_state["combinations_df"].iloc[0]["Routes"]
+            top_routes = [int(route.strip()) for route in top_routes_str.split(",")]
+            barplot_df = st.session_state["df_initial"].query("route_id in @top_routes").groupby('zone_id',as_index=False)['number_of_items'].sum()
+            plt.figure(figsize=(12, 6))
+            bins = range(0, int(barplot_df["number_of_items"].max()) + 10, 10)  # Бины шагом 10
+            plt.hist(barplot_df["number_of_items"], bins=bins, color="blue", alpha=0.6, label="Зоны")
+            plt.xlabel("Number of Items (bins of 10)")
+            plt.ylabel("Count of Zones")
+            plt.title("Распределение количества товаров по зонам (шаг 10)")
+            plt.grid(axis='y', linestyle='--', alpha=0.7)
+            plt.legend()
+
+            # Показываем график
+            st.pyplot(plt)
