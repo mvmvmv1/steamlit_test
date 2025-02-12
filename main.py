@@ -84,26 +84,29 @@ if st.button("Загрузить данные из БД"):
     st.session_state["pivot_df"] = pivot_df
     st.session_state["summary_df"] = summary_df
 
+    active_workers = load_sql_query("sql/active_workers_query.sql")
+    active_workers_df = downloading_postgres(active_workers)
+
+    st.session_state["active_workers_df"] = active_workers_df
+
 # Проверяем, есть ли загруженные данные
 if "df_initial" in st.session_state:
-    st.write("### Количество заказов по маршрутам")
-    st.dataframe(st.session_state["summary_df"])
-
-    # unique_times = sorted(st.session_state["summary_df"]["car_sending_sla"].unique())
-    # selected_times = st.multiselect("Выберите времена отправки", unique_times, default=unique_times)
-    #
-    # # Фильтр по количеству товаров
-    # selected_items_range = st.slider("Выберите диапазон количества товаров", 1, 6000, (2000, 3000))
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("### Количество заказов по маршрутам")
+        st.dataframe(st.session_state["summary_df"], use_container_width=True)
+    with col2:
+        st.write("### Число работников")
+        st.dataframe(st.session_state["active_workers_df"], use_container_width=True)
 
     unique_times = sorted(st.session_state["summary_df"]["car_sending_sla"].unique())
 
     # Две колонки
-    col1, col2 = st.columns(2)
+    col3, col4 = st.columns(2)
 
-    with col1:
+    with col3:
         selected_times = st.multiselect("Выберите времена отправки", unique_times, default=unique_times)
-
-    with col2:
+    with col4:
         selected_items_range = st.slider("Выберите диапазон количества товаров", 1, 6000, (2000, 3000))
 
 

@@ -14,3 +14,4 @@ SELECT *
 FROM intervals
 ORDER BY interval_start DESC
 offset 1
+limit 5
