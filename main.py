@@ -20,7 +20,6 @@ def load_sql_query(filepath, placeholders=None):
             query = query.replace(f"{{{key}}}", str(value))
     return query
 
-
 def downloading_postgres(query):
     connection = psycopg.connect(
         host=os.getenv('POSTGRES_HOST'),
@@ -36,7 +35,6 @@ def downloading_postgres(query):
             return result
     finally:
         connection.close()
-
 
 def process_data_wave_data(df):
     df_initial = df.copy()
@@ -55,7 +53,6 @@ def process_data_wave_data(df):
 
     return df_initial, pivot_df, summary_df
 
-
 def compute_combinations(route_ids, zone_values):
     combinations_array = []
     for r in range(1, len(route_ids) + 1):
@@ -67,9 +64,9 @@ def compute_combinations(route_ids, zone_values):
             q25 = round(np.percentile(np.sum(selected_routes, axis=0), 25), 1)
             earliest_sla = min(combination, key=lambda x: x[1])[1]
             formatted_routes = ", ".join([str(r[0]) for r in combination])
-            combinations_array.append((formatted_routes, avg_per_zone, total_items, q25, earliest_sla))
+            combinations_array.append((formatted_routes, total_items, avg_per_zone, q25, earliest_sla))
 
-    return  pd.DataFrame(combinations_array, columns=["Routes", "Average Items per Zone", "Total Items", "Q25", "Earliest SLA"])
+    return  pd.DataFrame(combinations_array, columns=["Routes", "Total Items", "Average Items per Zone", "Q25", "Earliest SLA"])
 
 
 st.title("Waves 🌊🌊🌊 🏄")
@@ -96,7 +93,6 @@ if st.button("Загрузить данные из БД"):
     wave_history_df = downloading_postgres(wave_history)
 
     st.session_state["wave_history_df"] = wave_history_df
-
 
 # Проверяем, есть ли загруженные данные
 if "df_initial" in st.session_state:
@@ -147,32 +143,50 @@ if "df_initial" in st.session_state:
             combinations_df = compute_combinations(route_ids, zone_values)
 
             # Фильтрация по слайдеру количества товаров
-            # combinations_df = combinations_df[
-            #     (combinations_df["Total Items"] >= selected_items_range[0]) &
-            #     (combinations_df["Total Items"] <= selected_items_range[1])
-            #     ]
-
-            combinations_df = combinations_df[combinations_df["Total Items"]<5000]
+            combinations_df = combinations_df[
+                (combinations_df["Total Items"] >= selected_items_range[0]) &
+                (combinations_df["Total Items"] <= selected_items_range[1])
+                ]
 
             combinations_df = combinations_df.sort_values(by = "Average Items per Zone", ascending=False)
 
             st.session_state["combinations_df"] = combinations_df
 
-            st.write("### Оптимальные маршруты для запуска")
-            st.dataframe(st.session_state["combinations_df"], use_container_width = True)
+            col5, col6 = st.columns(2)
+            with col5:
+                st.write("### Оптимальные маршруты для запуска")
+                st.dataframe(st.session_state["combinations_df"], use_container_width=True)
+            with col6:
+                # Получаем данные
+                top_routes_str = st.session_state["combinations_df"].iloc[0]["Routes"]
+                top_routes = [int(route.strip()) for route in top_routes_str.split(",")]
+                st.write(f"### Распределение товаров по зонам для маршрутов {top_routes}")
+                barplot_df = \
+                    st.session_state["df_initial"].query("route_id in @top_routes").groupby('zone_id', as_index=False)[
+                        'number_of_items'].sum()
 
+                st.session_state["barplot_df"] = barplot_df
 
-            top_routes_str = st.session_state["combinations_df"].iloc[0]["Routes"]
-            top_routes = [int(route.strip()) for route in top_routes_str.split(",")]
-            barplot_df = st.session_state["df_initial"].query("route_id in @top_routes").groupby('zone_id',as_index=False)['number_of_items'].sum()
-            plt.figure(figsize=(12, 6))
-            bins = range(0, int(barplot_df["number_of_items"].max()) + 10, 10)  # Бины шагом 10
-            plt.hist(barplot_df["number_of_items"], bins=bins, color="blue", alpha=0.6, label="Зоны")
-            plt.xlabel("Number of Items (bins of 10)")
-            plt.ylabel("Count of Zones")
-            plt.title("Распределение количества товаров по зонам (шаг 10)")
-            plt.grid(axis='y', linestyle='--', alpha=0.7)
-            plt.legend()
+                # Рассчитываем статистики
+                median_val = np.median(barplot_df["number_of_items"])
+                q25_val = np.percentile(barplot_df["number_of_items"], 25)
 
-            # Показываем график
-            st.pyplot(plt)
+                # Строим гистограмму
+                plt.figure(figsize=(8, 4))  # Уменьшенный размер графика
+                bins = range(0, int(barplot_df["number_of_items"].max()) + 10, 10)  # Бины шагом 10
+                plt.hist(barplot_df["number_of_items"], bins=bins, color="blue", alpha=0.6, label="Зоны")
+
+                # Добавляем вертикальные линии для медианы и Q25
+                plt.axvline(median_val, color="red", linestyle="dashed", linewidth=2,
+                            label=f"Медиана: {median_val:.1f}")
+                plt.axvline(q25_val, color="green", linestyle="dashed", linewidth=2, label=f"Q25: {q25_val:.1f}")
+
+                # Настройки графика
+                plt.xlabel("Number of Items")
+                plt.ylabel("Count of Zones")
+                plt.title(f"Распределение количества товаров по зонам")
+                plt.grid(axis='y', linestyle='--', alpha=0.7)
+                plt.legend()
+
+                # Показываем график
+                st.pyplot(plt)
